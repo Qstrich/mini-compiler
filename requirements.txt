@@ -1,0 +1,7 @@
+# CPU PyTorch for numeric baselines against the compiler.
+# Install with: pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
+# Then: pip install "nanobind==2.9.2" pybind11 onnx   # onnx is not on the pytorch index
+# MLIR Python bindings come from the LLVM build via PYTHONPATH (see scripts/env.sh).
+torch
+numpy
+onnx

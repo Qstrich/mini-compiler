@@ -1,0 +1,13 @@
+# Local toolchain / build artifacts (never commit)
+.venv/
+build/
+.cache/
+compile_commands.json
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+.clangd/
