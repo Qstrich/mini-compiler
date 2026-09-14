@@ -13,7 +13,7 @@ config.test_exec_root = os.path.join(config.tc_obj_root, "test")
 config.tc_tools_dir = os.path.join(config.tc_obj_root, "bin")
 config.substitutions.append(("%tc_src", config.tc_src_root))
 
-config.excludes = ["Inputs", "CMakeLists.txt", "README.txt", "LICENSE.txt"]
+config.excludes = ["Inputs", "CMakeLists.txt", "README.txt", "LICENSE.txt", "e2e"]
 
 llvm_config.with_system_environment(["HOME", "INCLUDE", "LIB", "TMP", "TEMP"])
 llvm_config.use_default_substitutions()
