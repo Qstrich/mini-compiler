@@ -111,9 +111,18 @@ def encode_graph(name: str, nodes: list[bytes], inputs: list[bytes],
     return bytes(out)
 
 
+def encode_opset(version: int = 13) -> bytes:
+    # OperatorSetIdProto: empty domain (ai.onnx), version = 2.
+    return _varint_field(2, version)
+
+
 def encode_model(graph: bytes) -> bytes:
-    # ir_version = 8 (field 1)
-    return _varint_field(1, 8) + _len_field(7, graph)
+    # ir_version = 1, graph = 7, opset_import = 8.
+    return (
+        _varint_field(1, 8)
+        + _len_field(7, graph)
+        + _len_field(8, encode_opset(13))
+    )
 
 
 def write_model(path: Path, graph: bytes) -> None:

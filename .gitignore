@@ -2,6 +2,7 @@
 .venv/
 build/
 .cache/
+.pytest_cache/
 compile_commands.json
 
 # Editor / OS noise
