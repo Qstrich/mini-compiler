@@ -20,13 +20,16 @@ enum class PipelineStage {
   Linalg,
   Memref,
   LLVM,
+  NVPTX,
 };
 
 /// Register dialects needed to parse and lower `tc` IR through LLVM.
 void registerTCCompilerDialects(DialectRegistry &registry);
 
 /// Lower `module` through `stage` (inclusive). Returns failure on pass errors.
-LogicalResult runPipeline(ModuleOp module, PipelineStage stage);
+/// `tileSizes` are M,N,K for Linalg opts (empty means {32, 32, 32}).
+LogicalResult runPipeline(ModuleOp module, PipelineStage stage,
+                          ArrayRef<int64_t> tileSizes = {});
 
 struct TensorBuffer {
   std::vector<int64_t> shape;
@@ -47,6 +50,9 @@ TensorBuffer makeSequentialInput(ArrayRef<int64_t> shape);
 
 /// Load a C-contiguous float32 `.npy` file.
 llvm::Expected<TensorBuffer> loadNpyF32(StringRef path);
+
+/// After `-emit=nvptx` lowering, write serialized PTX from `gpu.binary` ops.
+LogicalResult emitPTX(ModuleOp module, raw_ostream &os);
 
 } // namespace tc
 } // namespace mlir

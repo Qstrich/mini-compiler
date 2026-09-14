@@ -14,12 +14,16 @@
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/ReconcileUnrealizedCasts/ReconcileUnrealizedCasts.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Conversion/SCFToGPU/SCFToGPUPass.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/Bufferization/Pipelines/Passes.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Pipelines/Passes.h"
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
@@ -30,9 +34,9 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/InitAllExtensions.h"
 #include "mlir/Pass/PassManager.h"
-#include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
-#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Error.h"
@@ -49,9 +53,9 @@ using namespace mlir::tc;
 
 void mlir::tc::registerTCCompilerDialects(DialectRegistry &registry) {
   registerAllDialects(registry);
+  registerAllExtensions(registry);
   registry.insert<TCDialect>();
-  registerBuiltinDialectTranslation(registry);
-  registerLLVMDialectTranslation(registry);
+  registerAllGPUToLLVMIRTranslations(registry);
 }
 
 static void markEmitCInterface(ModuleOp module) {
@@ -62,10 +66,25 @@ static void markEmitCInterface(ModuleOp module) {
   });
 }
 
-LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage) {
+LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage,
+                                    ArrayRef<int64_t> tileSizes) {
   MLIRContext *ctx = module.getContext();
   PassManager pm(ctx);
   pm.addPass(createConvertTCToLinalg());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+
+  pm.addPass(createTransposeMatmulB());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createLinalgElementwiseOpFusionPass());
+
+  TileAndFuseOptions tileOpts;
+  if (tileSizes.empty())
+    tileOpts.tileSizes = {32, 32, 32};
+  else
+    tileOpts.tileSizes.assign(tileSizes.begin(), tileSizes.end());
+  pm.addPass(createTileAndFuse(tileOpts));
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
 
@@ -84,6 +103,22 @@ LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage) {
   pm.addPass(bufferization::createBufferResultsToOutParamsPass(outParams));
 
   bufferization::buildBufferDeallocationPipeline(pm);
+
+  if (stage == PipelineStage::NVPTX) {
+    pm.addPass(createConvertLinalgToParallelLoopsPass());
+    pm.addNestedPass<func::FuncOp>(createGpuMapParallelLoopsPass());
+    pm.addPass(createConvertParallelLoopToGpuPass());
+    pm.addPass(createOutlineGPUKernel());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+
+    gpu::GPUToNVVMPipelineOptions nvvmOpts;
+    nvvmOpts.cubinFormat = "isa";
+    nvvmOpts.cubinChip = "sm_75";
+    gpu::buildLowerToNVVMPassPipeline(pm, nvvmOpts);
+    return pm.run(module);
+  }
+
   pm.addNestedPass<func::FuncOp>(createConvertLinalgToLoopsPass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
@@ -321,4 +356,31 @@ llvm::Error mlir::tc::runJIT(ModuleOp module, ArrayRef<TensorBuffer> inputs,
   for (size_t i = 0, e = outputs.size(); i < e; ++i)
     outputs[i] = hostArgs[inputs.size() + i].takeBuffer();
   return llvm::Error::success();
+}
+
+LogicalResult mlir::tc::emitPTX(ModuleOp module, raw_ostream &os) {
+  bool found = false;
+  module.walk([&](gpu::BinaryOp binary) {
+    for (Attribute attr : binary.getObjects()) {
+      auto object = dyn_cast<gpu::ObjectAttr>(attr);
+      if (!object)
+        continue;
+      if (object.getFormat() != gpu::CompilationTarget::Assembly)
+        continue;
+      StringRef ptx = object.getObject().getValue();
+      if (ptx.empty())
+        continue;
+      if (found)
+        os << "\n// --- " << binary.getName() << " ---\n";
+      os << ptx;
+      if (!ptx.ends_with("\n"))
+        os << "\n";
+      found = true;
+    }
+  });
+  if (!found) {
+    module.emitError("no serialized PTX (gpu.binary assembly) in module");
+    return failure();
+  }
+  return success();
 }

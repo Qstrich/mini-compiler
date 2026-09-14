@@ -10,6 +10,7 @@ add_mlir_library(MLIRTCPipeline
   LINK_LIBS PUBLIC
   MLIRTC
   MLIRTCConversion
+  MLIRTCTransforms
   MLIRAffineToStandard
   MLIRArithToLLVM
   MLIRBufferizationPipelines
@@ -18,15 +19,25 @@ add_mlir_library(MLIRTCPipeline
   MLIRControlFlowToLLVM
   MLIRExecutionEngine
   MLIRFuncToLLVM
+  MLIRGPUDialect
+  MLIRGPUPipelines
+  MLIRGPUToLLVMIRTranslation
+  MLIRGPUToNVVMTransforms
+  MLIRGPUTransforms
   MLIRIndexToLLVM
   MLIRLLVMToLLVMIRTranslation
   MLIRLinalgTransforms
   MLIRMathToLLVM
   MLIRMemRefToLLVM
   MLIRMemRefTransforms
+  MLIRNVVMTarget
+  MLIRNVVMToLLVMIRTranslation
   MLIRReconcileUnrealizedCasts
   MLIRRegisterAllDialects
+  MLIRRegisterAllExtensions
   MLIRSCFToControlFlow
+  MLIRSCFToGPU
   MLIRTargetLLVMIRExport
+  MLIRToLLVMIRTranslationRegistration
   MLIRUBToLLVM
   )
