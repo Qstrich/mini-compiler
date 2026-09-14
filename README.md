@@ -134,4 +134,6 @@ suite and pytest when available.
 ## Status
 
 Done: ONNX → `tc` → Linalg (transpose-B / tile / fuse) → bufferize → host
-LLVM → CPU JIT, and GPU outline → NVVM → PTX dump.
+LLVM → CPU JIT, plus bufferized Linalg → parallel loops → mapped GPU
+launches → NVVM → compile-only PTX dump. The outline pass remains available
+as a standalone fallback for un-mapped GPU IR; no CUDA runtime is required.

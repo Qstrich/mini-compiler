@@ -79,14 +79,20 @@ LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage,
   pm.addPass(createCSEPass());
   pm.addPass(createLinalgElementwiseOpFusionPass());
 
-  TileAndFuseOptions tileOpts;
-  if (tileSizes.empty())
-    tileOpts.tileSizes = {32, 32, 32};
-  else
-    tileOpts.tileSizes.assign(tileSizes.begin(), tileSizes.end());
-  pm.addPass(createTileAndFuse(tileOpts));
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
+  // CPU lowering uses SCF tiling to expose cache-friendly loops. NVPTX gets
+  // its launch grid from the parallel dimensions of the un-tiled Linalg
+  // operations below; applying the CPU tiler here would turn those dimensions
+  // into scf.for and leave GPU mapping with no parallel work to map.
+  if (stage != PipelineStage::NVPTX) {
+    TileAndFuseOptions tileOpts;
+    if (tileSizes.empty())
+      tileOpts.tileSizes = {32, 32, 32};
+    else
+      tileOpts.tileSizes.assign(tileSizes.begin(), tileSizes.end());
+    pm.addPass(createTileAndFuse(tileOpts));
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+  }
 
   if (stage == PipelineStage::Linalg)
     return pm.run(module);
@@ -108,7 +114,6 @@ LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage,
     pm.addPass(createConvertLinalgToParallelLoopsPass());
     pm.addNestedPass<func::FuncOp>(createGpuMapParallelLoopsPass());
     pm.addPass(createConvertParallelLoopToGpuPass());
-    pm.addPass(createOutlineGPUKernel());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
 

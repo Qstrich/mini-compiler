@@ -96,11 +96,15 @@ After the same bufferize:
 
 1. `linalg` → `scf.parallel` (reduction dims stay `scf.for`)
 2. `gpu-map-parallel-loops` + `convert-parallel-loops-to-gpu`
-3. Fallback `--tc-outline-gpu-kernel`: wrap `@main` in a 1×1×1 `gpu.launch`
+3. GPU launches use the parallel `M,N` dimensions as their block grid;
+   reductions remain sequential loops inside each block
 4. Upstream `gpu-lower-to-nvvm-pipeline` with `cubin-format=isa`, `sm_75`
 5. Extract PTX from `gpu.binary` assembly objects
 
-No `ptxas`, no cubin, no launch. FileCheck only requires `.visible .entry`.
+`--tc-outline-gpu-kernel` is a standalone fallback pass for IR that has no
+mapped launch; it is not part of the normal `tc-compile -emit=nvptx` path.
+No `ptxas`, no cubin, no runtime launch. FileCheck verifies the PTX entry and
+the mapped block IDs.
 
 ## Tests
 
