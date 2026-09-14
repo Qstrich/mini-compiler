@@ -96,7 +96,8 @@ Binaries: `build/bin/tc-opt`, `build/bin/tc-compile`.
 
 `-emit=linalg` (and later stages) run transpose-B, elementwise fuse, then
 tile+fuse. `-emit=jit` fills missing `-input=` files with `0, 1, 2, …` and
-prints the result tensor.
+prints the result tensor. For `-emit=nvptx`, `-tile-sizes=M,N,K` controls the
+GPU thread-block shape from `M,N`; `K` remains a sequential reduction loop.
 
 ```bash
 ./build/bin/tc-opt test/smoke/empty.mlir
@@ -134,6 +135,7 @@ suite and pytest when available.
 ## Status
 
 Done: ONNX → `tc` → Linalg (transpose-B / tile / fuse) → bufferize → host
-LLVM → CPU JIT, plus bufferized Linalg → parallel loops → mapped GPU
-launches → NVVM → compile-only PTX dump. The outline pass remains available
-as a standalone fallback for un-mapped GPU IR; no CUDA runtime is required.
+LLVM → CPU JIT, plus bufferized Linalg → tiled parallel loops → mapped GPU
+block/thread launches → NVVM → compile-only PTX dump. The outline pass remains
+available as a standalone fallback for un-mapped GPU IR; no CUDA runtime is
+required.

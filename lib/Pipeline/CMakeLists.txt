@@ -37,6 +37,7 @@ add_mlir_library(MLIRTCPipeline
   MLIRRegisterAllExtensions
   MLIRSCFToControlFlow
   MLIRSCFToGPU
+  MLIRSCFTransforms
   MLIRTargetLLVMIRExport
   MLIRToLLVMIRTranslationRegistration
   MLIRUBToLLVM

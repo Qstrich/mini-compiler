@@ -95,11 +95,17 @@ ONNX Runtime is used too when it is installed.
 After the same bufferize:
 
 1. `linalg` → `scf.parallel` (reduction dims stay `scf.for`)
-2. `gpu-map-parallel-loops` + `convert-parallel-loops-to-gpu`
-3. GPU launches use the parallel `M,N` dimensions as their block grid;
-   reductions remain sequential loops inside each block
-4. Upstream `gpu-lower-to-nvvm-pipeline` with `cubin-format=isa`, `sm_75`
-5. Extract PTX from `gpu.binary` assembly objects
+2. Tile `scf.parallel` on `M,N` into an outer block loop and an inner
+   thread loop; partial tiles use inbound guards
+3. `gpu-map-parallel-loops` with `innermost-first` +
+   `convert-parallel-loops-to-gpu`: outer loops become the block grid and
+   inner loops become the thread block
+4. Reduction dimensions remain sequential `scf.for` loops inside each thread
+5. Upstream `gpu-lower-to-nvvm-pipeline` with `cubin-format=isa`, `sm_75`
+6. Extract PTX from `gpu.binary` assembly objects
+
+For `-emit=nvptx`, `-tile-sizes=M,N,K` uses only `M,N` as the thread-block
+shape; `K` remains sequential. The default is `32,32` threads per block.
 
 `--tc-outline-gpu-kernel` is a standalone fallback pass for IR that has no
 mapped launch; it is not part of the normal `tc-compile -emit=nvptx` path.

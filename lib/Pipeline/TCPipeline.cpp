@@ -29,6 +29,7 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
+#include "mlir/Dialect/SCF/Transforms/Passes.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -112,7 +113,25 @@ LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage,
 
   if (stage == PipelineStage::NVPTX) {
     pm.addPass(createConvertLinalgToParallelLoopsPass());
-    pm.addNestedPass<func::FuncOp>(createGpuMapParallelLoopsPass());
+    SmallVector<int64_t> gpuTileSizes = {32, 32};
+    if (!tileSizes.empty()) {
+      gpuTileSizes.clear();
+      for (int64_t size : tileSizes) {
+        if (gpuTileSizes.size() == 2)
+          break;
+        gpuTileSizes.push_back(size);
+      }
+    }
+    pm.addNestedPass<func::FuncOp>(
+        createParallelLoopTilingPass(gpuTileSizes, /*noMinMaxBounds=*/true));
+    // Keep the two loop levels until GPU mapping. Canonicalization would
+    // collapse the one-trip outer loop for the small static test models.
+    pm.addPass(createCSEPass());
+
+    GpuMapParallelLoopsPassOptions mapOptions;
+    mapOptions.mappingPolicyStr = "innermost-first";
+    pm.addNestedPass<func::FuncOp>(
+        createGpuMapParallelLoopsPass(mapOptions));
     pm.addPass(createConvertParallelLoopToGpuPass());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
