@@ -7,12 +7,16 @@
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 namespace {
@@ -45,7 +49,31 @@ llvm::cl::opt<EmitKind> Emit(
 llvm::cl::list<std::string> InputData(
     "input", llvm::cl::desc("C-contiguous float32 .npy file for each @main arg"),
     llvm::cl::value_desc("file.npy"), llvm::cl::ZeroOrMore);
+
+llvm::cl::opt<std::string> TileSizes(
+    "tile-sizes",
+    llvm::cl::desc("Comma-separated M,N,K Linalg tile sizes (default 32,32,32)"),
+    llvm::cl::init("32,32,32"));
+
+llvm::cl::opt<std::string> OutputFilename(
+    "o", llvm::cl::desc("Output file (default: stdout)"),
+    llvm::cl::value_desc("filename"), llvm::cl::init("-"));
 } // namespace
+
+static llvm::SmallVector<int64_t> parseTileSizes(llvm::StringRef text) {
+  llvm::SmallVector<int64_t> sizes;
+  if (text.empty())
+    return {32, 32, 32};
+  while (!text.empty()) {
+    auto [head, rest] = text.split(',');
+    int64_t value = 0;
+    if (head.trim().getAsInteger(10, value))
+      return {};
+    sizes.push_back(value);
+    text = rest;
+  }
+  return sizes;
+}
 
 static const char *emitKindName(EmitKind kind) {
   switch (kind) {
@@ -76,9 +104,24 @@ static mlir::tc::PipelineStage emitToStage(EmitKind kind) {
   case EmitKind::LLVM:
   case EmitKind::JIT:
     return mlir::tc::PipelineStage::LLVM;
+  case EmitKind::NVPTX:
+    return mlir::tc::PipelineStage::NVPTX;
   default:
     llvm_unreachable("emit kind is not a lowering stage");
   }
+}
+
+static llvm::Expected<std::unique_ptr<llvm::ToolOutputFile>>
+openOutput() {
+  if (OutputFilename == "-")
+    return std::unique_ptr<llvm::ToolOutputFile>();
+  std::error_code ec;
+  auto file = std::make_unique<llvm::ToolOutputFile>(OutputFilename, ec,
+                                                     llvm::sys::fs::OF_None);
+  if (ec)
+    return llvm::createStringError(ec, "failed to open '" + OutputFilename +
+                                           "': " + ec.message());
+  return file;
 }
 
 int main(int argc, char **argv) {
@@ -87,11 +130,15 @@ int main(int argc, char **argv) {
       argc, argv,
       "tc-compile - Mini end-to-end tensor compiler (ONNX -> MLIR -> LLVM)\n");
 
-  if (Emit == EmitKind::NVPTX) {
-    llvm::errs() << "tc-compile: -emit=nvptx is not implemented yet.\n"
-                 << "Implemented: proto, mlir, linalg, memref, llvm, jit\n";
+  llvm::Expected<std::unique_ptr<llvm::ToolOutputFile>> outFileOr =
+      openOutput();
+  if (!outFileOr) {
+    llvm::errs() << "tc-compile: " << llvm::toString(outFileOr.takeError())
+                 << "\n";
     return EXIT_FAILURE;
   }
+  llvm::raw_ostream &out =
+      *outFileOr ? (*outFileOr)->os() : llvm::outs();
 
   llvm::Expected<mlir::tc::ModelInfo> modelOr =
       mlir::tc::parseONNXFile(InputFilename);
@@ -102,7 +149,9 @@ int main(int argc, char **argv) {
   }
 
   if (Emit == EmitKind::Proto) {
-    mlir::tc::dumpModelInfo(*modelOr, llvm::outs());
+    mlir::tc::dumpModelInfo(*modelOr, out);
+    if (*outFileOr)
+      (*outFileOr)->keep();
     return EXIT_SUCCESS;
   }
 
@@ -119,18 +168,38 @@ int main(int argc, char **argv) {
   }
 
   if (Emit == EmitKind::Mlir) {
-    (*moduleOr)->print(llvm::outs());
+    (*moduleOr)->print(out);
+    if (*outFileOr)
+      (*outFileOr)->keep();
     return EXIT_SUCCESS;
   }
 
-  if (failed(mlir::tc::runPipeline(**moduleOr, emitToStage(Emit)))) {
+  llvm::SmallVector<int64_t> tileSizes = parseTileSizes(TileSizes);
+  if (tileSizes.empty()) {
+    llvm::errs() << "tc-compile: invalid -tile-sizes '" << TileSizes << "'\n";
+    return EXIT_FAILURE;
+  }
+
+  if (failed(mlir::tc::runPipeline(**moduleOr, emitToStage(Emit), tileSizes))) {
     llvm::errs() << "tc-compile: lowering to " << emitKindName(Emit)
                  << " failed\n";
     return EXIT_FAILURE;
   }
 
+  if (Emit == EmitKind::NVPTX) {
+    if (failed(mlir::tc::emitPTX(**moduleOr, out))) {
+      llvm::errs() << "tc-compile: failed to extract PTX\n";
+      return EXIT_FAILURE;
+    }
+    if (*outFileOr)
+      (*outFileOr)->keep();
+    return EXIT_SUCCESS;
+  }
+
   if (Emit != EmitKind::JIT) {
-    (*moduleOr)->print(llvm::outs());
+    (*moduleOr)->print(out);
+    if (*outFileOr)
+      (*outFileOr)->keep();
     return EXIT_SUCCESS;
   }
 

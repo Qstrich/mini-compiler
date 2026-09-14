@@ -6,6 +6,7 @@ set(LIBS
   MLIRRegisterAllPasses
   MLIRTC
   MLIRTCConversion
+  MLIRTCTransforms
   MLIRTCPipeline
 )
 
