@@ -2,10 +2,9 @@
 
 Out-of-tree MLIR compiler for static `fp32` ONNX graphs that are a linear
 layer or simpler: `Constant`, `Add`, `Relu`, `MatMul`. Input is ONNX.
-Output is either CPU machine code (`-emit=jit`) or PTX text (`-emit=nvptx`).
-PTX is compile-only: no CUDA runtime, no device launch.
+Output is CPU machine code (`-emit=jit`).
 
-Pinned LLVM: **llvmorg-23.1.1**, built with `host;NVPTX` and
+Pinned LLVM: **llvmorg-23.1.1**, built with `host` and
 `MLIR_ENABLE_CUDA_RUNNER=OFF`.
 
 ## Pipeline
@@ -16,11 +15,8 @@ ONNX protobuf
     → tc dialect  (-emit=mlir)
     → Linalg-on-tensors + opts  (-emit=linalg)
     → one-shot bufferize  (-emit=memref)
-         ├─ scf/memref → host LLVM → ExecutionEngine  (-emit=llvm|jit)
-         └─ scf.parallel → gpu.launch → NVVM → PTX  (-emit=nvptx)
+         → scf/memref → host LLVM → ExecutionEngine  (-emit=llvm|jit)
 ```
-
-The GPU path is a second lowering, not a retarget of host LLVM IR.
 
 ## Tools
 
@@ -90,29 +86,17 @@ Missing `-input=` files are filled with `0, 1, 2, …`. Outputs print as a shape
 header plus row-major floats. Goldens are NumPy (`1e-4` rel / `1e-5` abs);
 ONNX Runtime is used too when it is installed.
 
-## NVPTX emit
-
-After the same bufferize:
-
-1. `linalg` → `scf.parallel` (reduction dims stay `scf.for`)
-2. `gpu-map-parallel-loops` + `convert-parallel-loops-to-gpu`
-3. Fallback `--tc-outline-gpu-kernel`: wrap `@main` in a 1×1×1 `gpu.launch`
-4. Upstream `gpu-lower-to-nvvm-pipeline` with `cubin-format=isa`, `sm_75`
-5. Extract PTX from `gpu.binary` assembly objects
-
-No `ptxas`, no cubin, no launch. FileCheck only requires `.visible .entry`.
-
 ## Tests
 
-`ninja -C build check-tc` is the CPU-only gate (no GPU).
+`ninja -C build check-tc` is the CPU test gate.
 
 | Area | What it freezes |
 |---|---|
 | `test/Dialect` | Op assembly + verifier errors |
 | `test/Frontend` | `-emit=proto` / `-emit=mlir` |
 | `test/Conversion` | `tc` → Linalg |
-| `test/Transforms` | Transpose-B, tile+fuse, GPU outline |
+| `test/Transforms` | Transpose-B, tile+fuse |
 | `test/Pipeline` | Every later `-emit=`, plus JIT vs NumPy |
-| `test/e2e` | Pytest: JIT vs NumPy/ORT, PTX dump |
+| `test/e2e` | Pytest: JIT vs NumPy/ORT |
 
 `scripts/run_ci.sh` builds `check-tc` and, if pytest is present, `test/e2e`.

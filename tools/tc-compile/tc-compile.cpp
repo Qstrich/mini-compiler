@@ -27,7 +27,6 @@ enum class EmitKind {
   Memref,
   LLVM,
   JIT,
-  NVPTX,
 };
 
 llvm::cl::opt<std::string> InputFilename(llvm::cl::Positional,
@@ -42,8 +41,7 @@ llvm::cl::opt<EmitKind> Emit(
         clEnumValN(EmitKind::Linalg, "linalg", "Emit after linalg lowering"),
         clEnumValN(EmitKind::Memref, "memref", "Emit after bufferization"),
         clEnumValN(EmitKind::LLVM, "llvm", "Emit host LLVM dialect"),
-        clEnumValN(EmitKind::JIT, "jit", "JIT-compile and run on CPU"),
-        clEnumValN(EmitKind::NVPTX, "nvptx", "Emit NVPTX/PTX (no launch)")),
+        clEnumValN(EmitKind::JIT, "jit", "JIT-compile and run on CPU")),
     llvm::cl::init(EmitKind::Mlir));
 
 llvm::cl::list<std::string> InputData(
@@ -89,8 +87,6 @@ static const char *emitKindName(EmitKind kind) {
     return "llvm";
   case EmitKind::JIT:
     return "jit";
-  case EmitKind::NVPTX:
-    return "nvptx";
   }
   return "unknown";
 }
@@ -104,8 +100,6 @@ static mlir::tc::PipelineStage emitToStage(EmitKind kind) {
   case EmitKind::LLVM:
   case EmitKind::JIT:
     return mlir::tc::PipelineStage::LLVM;
-  case EmitKind::NVPTX:
-    return mlir::tc::PipelineStage::NVPTX;
   default:
     llvm_unreachable("emit kind is not a lowering stage");
   }
@@ -184,16 +178,6 @@ int main(int argc, char **argv) {
     llvm::errs() << "tc-compile: lowering to " << emitKindName(Emit)
                  << " failed\n";
     return EXIT_FAILURE;
-  }
-
-  if (Emit == EmitKind::NVPTX) {
-    if (failed(mlir::tc::emitPTX(**moduleOr, out))) {
-      llvm::errs() << "tc-compile: failed to extract PTX\n";
-      return EXIT_FAILURE;
-    }
-    if (*outFileOr)
-      (*outFileOr)->keep();
-    return EXIT_SUCCESS;
   }
 
   if (Emit != EmitKind::JIT) {

@@ -51,19 +51,4 @@ def TileAndFuse : Pass<"tc-tile-and-fuse", "::mlir::ModuleOp"> {
   ];
 }
 
-def OutlineGPUKernel : Pass<"tc-outline-gpu-kernel", "::mlir::ModuleOp"> {
-  let summary = "Wrap @main in gpu.launch if it is not already a GPU kernel.";
-  let description = [{
-    Fallback for the NVPTX path when `scf.parallel` mapping did not produce a
-    `gpu.launch`. Wraps the body of `func.func @main` in a 1x1x1 launch so
-    `gpu-kernel-outlining` can extract a `gpu.func` and the NVVM pipeline can
-    serialize PTX. Existing launches are left unchanged.
-  }];
-  let dependentDialects = [
-    "mlir::arith::ArithDialect",
-    "mlir::func::FuncDialect",
-    "mlir::gpu::GPUDialect"
-  ];
-}
-
 #endif // TC_CONVERSION_PASSES

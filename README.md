@@ -1,8 +1,7 @@
 # Mini Tensor Compiler
 
 End-to-end mini tensor compiler via MLIR. ONNX linear-layer graphs lower
-through a custom `tc` dialect to Linalg, MemRef, host LLVM, CPU JIT, and a
-compile-only NVPTX/PTX dump (no GPU required).
+through a custom `tc` dialect to Linalg, MemRef, host LLVM, and CPU JIT.
 
 Architecture notes: [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -58,8 +57,8 @@ which mlir-opt   # must be ~/src/llvm-project/build/bin/mlir-opt
 mlir-opt --version
 ```
 
-Flags: Release, Clang+LLD, `host;NVPTX`, assertions, utils, ccache, Python
-bindings on, CUDA runner off.
+Flags: Release, Clang+LLD, `host`, assertions, utils, ccache, Python bindings
+on, CUDA runner off.
 
 ## Build this project
 
@@ -89,7 +88,6 @@ Binaries: `build/bin/tc-opt`, `build/bin/tc-compile`.
 | `-emit=memref` | After one-shot bufferize |
 | `-emit=llvm` | Host LLVM dialect |
 | `-emit=jit` | JIT-compile and run on CPU |
-| `-emit=nvptx` | PTX text (no launch) |
 | `-o file` | Write that dump to `file` (stdout if omitted) |
 | `-tile-sizes=M,N,K` | Linalg tile sizes (default `32,32,32`) |
 | `-input=file.npy` | C-contiguous `float32` input for each `@main` arg |
@@ -109,7 +107,6 @@ prints the result tensor.
 ./build/bin/tc-compile models/linear.onnx -emit=memref
 ./build/bin/tc-compile models/linear.onnx -emit=llvm
 ./build/bin/tc-compile models/linear.onnx -emit=jit
-./build/bin/tc-compile models/linear.onnx -emit=nvptx -o linear.ptx
 ```
 
 Regenerate sample ONNX graphs (already checked in under `models/`):
@@ -127,11 +124,11 @@ python3 scripts/check_numeric.py --tc-compile ./build/bin/tc-compile --src .
 
 ## Tests / CI
 
-`ninja -C build check-tc` is the CPU-only gate: FileCheck on every `-emit=`
-stage plus JIT goldens. It does not need a GPU. `scripts/run_ci.sh` runs that
-suite and pytest when available.
+`ninja -C build check-tc` is the CPU test gate: FileCheck on every `-emit=`
+stage plus JIT goldens. `scripts/run_ci.sh` runs that suite and pytest when
+available.
 
 ## Status
 
 Done: ONNX → `tc` → Linalg (transpose-B / tile / fuse) → bufferize → host
-LLVM → CPU JIT, and GPU outline → NVVM → PTX dump.
+LLVM → CPU JIT.

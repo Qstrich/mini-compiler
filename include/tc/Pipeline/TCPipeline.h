@@ -20,7 +20,6 @@ enum class PipelineStage {
   Linalg,
   Memref,
   LLVM,
-  NVPTX,
 };
 
 /// Register dialects needed to parse and lower `tc` IR through LLVM.
@@ -50,9 +49,6 @@ TensorBuffer makeSequentialInput(ArrayRef<int64_t> shape);
 
 /// Load a C-contiguous float32 `.npy` file.
 llvm::Expected<TensorBuffer> loadNpyF32(StringRef path);
-
-/// After `-emit=nvptx` lowering, write serialized PTX from `gpu.binary` ops.
-LogicalResult emitPTX(ModuleOp module, raw_ostream &os);
 
 } // namespace tc
 } // namespace mlir
