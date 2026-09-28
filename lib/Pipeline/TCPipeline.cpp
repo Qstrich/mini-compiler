@@ -64,25 +64,10 @@ static void markEmitCInterface(ModuleOp module) {
   });
 }
 
-LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage,
-                                    ArrayRef<int64_t> tileSizes) {
+LogicalResult mlir::tc::runPipeline(ModuleOp module, PipelineStage stage) {
   MLIRContext *ctx = module.getContext();
   PassManager pm(ctx);
   pm.addPass(createConvertTCToLinalg());
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
-
-  pm.addPass(createTransposeMatmulB());
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
-  pm.addPass(createLinalgElementwiseOpFusionPass());
-
-  TileAndFuseOptions tileOpts;
-  if (tileSizes.empty())
-    tileOpts.tileSizes = {32, 32, 32};
-  else
-    tileOpts.tileSizes.assign(tileSizes.begin(), tileSizes.end());
-  pm.addPass(createTileAndFuse(tileOpts));
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
 

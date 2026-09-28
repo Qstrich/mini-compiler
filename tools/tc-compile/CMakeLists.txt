@@ -9,7 +9,6 @@ set(LIBS
   MLIRTCFrontend
   MLIRTC
   MLIRTCConversion
-  MLIRTCTransforms
   MLIRTCPipeline
   MLIRIR
   LLVMSupport

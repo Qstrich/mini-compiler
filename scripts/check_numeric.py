@@ -132,7 +132,6 @@ def run_all(tc_compile: str, src: Path, require_ort: bool = False) -> None:
     for name in MODELS:
         path = models / f"{name}.onnx"
         run_one(tc_compile, path, require_ort=require_ort)
-        run_one(tc_compile, path, ["-tile-sizes=2,2,2"], require_ort=require_ort)
 
 
 def main() -> int:

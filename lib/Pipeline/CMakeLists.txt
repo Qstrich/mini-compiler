@@ -10,7 +10,6 @@ add_mlir_library(MLIRTCPipeline
   LINK_LIBS PUBLIC
   MLIRTC
   MLIRTCConversion
-  MLIRTCTransforms
   MLIRAffineToStandard
   MLIRArithToLLVM
   MLIRBufferizationPipelines

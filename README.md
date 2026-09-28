@@ -84,26 +84,22 @@ Binaries: `build/bin/tc-opt`, `build/bin/tc-compile`.
 |---|---|
 | `-emit=proto` | Structured ONNX `ModelInfo` dump |
 | `-emit=mlir` | `tc` dialect |
-| `-emit=linalg` | After Linalg lowering + opts |
+| `-emit=linalg` | After lowering to Linalg-on-tensors |
 | `-emit=memref` | After one-shot bufferize |
 | `-emit=llvm` | Host LLVM dialect |
 | `-emit=jit` | JIT-compile and run on CPU |
 | `-o file` | Write that dump to `file` (stdout if omitted) |
-| `-tile-sizes=M,N,K` | Linalg tile sizes (default `32,32,32`) |
 | `-input=file.npy` | C-contiguous `float32` input for each `@main` arg |
 
-`-emit=linalg` (and later stages) run transpose-B, elementwise fuse, then
-tile+fuse. `-emit=jit` fills missing `-input=` files with `0, 1, 2, …` and
-prints the result tensor.
+`-emit=jit` fills missing `-input=` files with `0, 1, 2, …` and prints the
+result tensor.
 
 ```bash
 ./build/bin/tc-opt test/smoke/empty.mlir
 ./build/bin/tc-opt test/Conversion/tc-to-linalg.mlir --convert-tc-to-linalg
 ./build/bin/tc-compile models/linear.onnx -emit=proto
 ./build/bin/tc-compile models/linear.onnx -emit=mlir
-./build/bin/tc-opt test/Transforms/transpose-matmul-b.mlir --tc-transpose-matmul-b
 ./build/bin/tc-compile models/linear.onnx -emit=linalg
-./build/bin/tc-compile models/linear.onnx -emit=linalg -tile-sizes=2,2,2
 ./build/bin/tc-compile models/linear.onnx -emit=memref
 ./build/bin/tc-compile models/linear.onnx -emit=llvm
 ./build/bin/tc-compile models/linear.onnx -emit=jit
@@ -130,5 +126,4 @@ available.
 
 ## Status
 
-Done: ONNX → `tc` → Linalg (transpose-B / tile / fuse) → bufferize → host
-LLVM → CPU JIT.
+Done: ONNX → `tc` → Linalg → bufferize → host LLVM → CPU JIT.

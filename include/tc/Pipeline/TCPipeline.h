@@ -26,9 +26,7 @@ enum class PipelineStage {
 void registerTCCompilerDialects(DialectRegistry &registry);
 
 /// Lower `module` through `stage` (inclusive). Returns failure on pass errors.
-/// `tileSizes` are M,N,K for Linalg opts (empty means {32, 32, 32}).
-LogicalResult runPipeline(ModuleOp module, PipelineStage stage,
-                          ArrayRef<int64_t> tileSizes = {});
+LogicalResult runPipeline(ModuleOp module, PipelineStage stage);
 
 struct TensorBuffer {
   std::vector<int64_t> shape;

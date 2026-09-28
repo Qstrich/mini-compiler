@@ -48,30 +48,10 @@ llvm::cl::list<std::string> InputData(
     "input", llvm::cl::desc("C-contiguous float32 .npy file for each @main arg"),
     llvm::cl::value_desc("file.npy"), llvm::cl::ZeroOrMore);
 
-llvm::cl::opt<std::string> TileSizes(
-    "tile-sizes",
-    llvm::cl::desc("Comma-separated M,N,K Linalg tile sizes (default 32,32,32)"),
-    llvm::cl::init("32,32,32"));
-
 llvm::cl::opt<std::string> OutputFilename(
     "o", llvm::cl::desc("Output file (default: stdout)"),
     llvm::cl::value_desc("filename"), llvm::cl::init("-"));
 } // namespace
-
-static llvm::SmallVector<int64_t> parseTileSizes(llvm::StringRef text) {
-  llvm::SmallVector<int64_t> sizes;
-  if (text.empty())
-    return {32, 32, 32};
-  while (!text.empty()) {
-    auto [head, rest] = text.split(',');
-    int64_t value = 0;
-    if (head.trim().getAsInteger(10, value))
-      return {};
-    sizes.push_back(value);
-    text = rest;
-  }
-  return sizes;
-}
 
 static const char *emitKindName(EmitKind kind) {
   switch (kind) {
@@ -168,13 +148,7 @@ int main(int argc, char **argv) {
     return EXIT_SUCCESS;
   }
 
-  llvm::SmallVector<int64_t> tileSizes = parseTileSizes(TileSizes);
-  if (tileSizes.empty()) {
-    llvm::errs() << "tc-compile: invalid -tile-sizes '" << TileSizes << "'\n";
-    return EXIT_FAILURE;
-  }
-
-  if (failed(mlir::tc::runPipeline(**moduleOr, emitToStage(Emit), tileSizes))) {
+  if (failed(mlir::tc::runPipeline(**moduleOr, emitToStage(Emit)))) {
     llvm::errs() << "tc-compile: lowering to " << emitKindName(Emit)
                  << " failed\n";
     return EXIT_FAILURE;

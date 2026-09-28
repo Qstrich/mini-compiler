@@ -13,7 +13,7 @@ Pinned LLVM: **llvmorg-23.1.1**, built with `host` and
 ONNX protobuf
     → ModelInfo (names, shapes, initializers, nodes)
     → tc dialect  (-emit=mlir)
-    → Linalg-on-tensors + opts  (-emit=linalg)
+    → Linalg-on-tensors  (-emit=linalg)
     → one-shot bufferize  (-emit=memref)
          → scf/memref → host LLVM → ExecutionEngine  (-emit=llvm|jit)
 ```
@@ -60,20 +60,15 @@ Supported node types: `Add`, `Relu`, `MatMul`, `Constant`.
 
 Sample graphs in `models/` are written by `scripts/gen_models.py`.
 
-## Optimizations
+## Lowering pipeline
 
-All on Linalg-on-tensors, before bufferization. Canonicalize + CSE after each.
-
-1. **Transpose-B** (`--tc-transpose-matmul-b`): rewrite `linalg.matmul` so the
-   contracting dimension of `B` is contiguous (`linalg.matmul_transpose_b`).
-2. **Elementwise fusion**: upstream `linalg-fuse-elementwise-ops` (Add+Relu).
-3. **Tile and fuse** (`--tc-tile-and-fuse`): tile matmul on `M,N` (not `K`)
-   with `-tile-sizes=M,N,K` (default `32,32,32`), then fuse tensor elementwise
-   consumers into the tile loops. Reduction dests are zero-filled before tiling.
+The barebones pipeline keeps the tensor program easy to follow. It lowers the
+custom `tc` operations to Linalg and then immediately proceeds to bufferization.
+Canonicalize and CSE clean up the IR after the custom conversion.
 
 ## CPU backend
 
-After opts:
+After Linalg lowering:
 
 1. One-shot bufferize with identity layouts and function-boundary bufferization
 2. Results → out-params, then buffer deallocation
@@ -95,7 +90,6 @@ ONNX Runtime is used too when it is installed.
 | `test/Dialect` | Op assembly + verifier errors |
 | `test/Frontend` | `-emit=proto` / `-emit=mlir` |
 | `test/Conversion` | `tc` → Linalg |
-| `test/Transforms` | Transpose-B, tile+fuse |
 | `test/Pipeline` | Every later `-emit=`, plus JIT vs NumPy |
 | `test/e2e` | Pytest: JIT vs NumPy/ORT |
 

@@ -29,6 +29,5 @@ def _tc_compile() -> str:
 
 
 @pytest.mark.parametrize("name", cn.MODELS)
-@pytest.mark.parametrize("extra", [None, ["-tile-sizes=2,2,2"]])
-def test_jit_matches_numpy(name: str, extra: list[str] | None) -> None:
-    cn.run_one(_tc_compile(), ROOT / "models" / f"{name}.onnx", extra)
+def test_jit_matches_numpy(name: str) -> None:
+    cn.run_one(_tc_compile(), ROOT / "models" / f"{name}.onnx")
