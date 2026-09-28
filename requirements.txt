@@ -1,9 +1,5 @@
-# CPU PyTorch / NumPy for numeric baselines against the compiler.
-# Install with: pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
-# Then (not on the pytorch index): pip install "nanobind==2.9.2" pybind11 onnx onnxruntime pytest
-# MLIR Python bindings come from the LLVM build via PYTHONPATH (see scripts/env.sh).
-torch
-numpy
-onnx
-# optional: onnxruntime  (ORT goldens in scripts/check_numeric.py)
-# optional: pytest       (test/e2e)
+# Python tooling for the sample models and numeric checks.
+# Install with: pip install -r requirements.txt
+numpy   # NumPy goldens in scripts/check_numeric.py (run by check-tc)
+onnx    # regenerating models/*.onnx with scripts/gen_models.py
+# optional: onnxruntime  (second golden in scripts/check_numeric.py)

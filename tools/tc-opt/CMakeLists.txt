@@ -4,9 +4,8 @@ set(LIBS
   MLIROptLib
   MLIRRegisterAllDialects
   MLIRRegisterAllPasses
-  MLIRTC
-  MLIRTCConversion
-  MLIRTCPipeline
+  TCDialect
+  TCLowering
 )
 
 add_llvm_executable(tc-opt tc-opt.cpp)

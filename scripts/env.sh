@@ -25,17 +25,7 @@ case ":$PATH:" in
   *) export PATH="$LLVM_BUILD/bin:$PATH" ;;
 esac
 
-# MLIR Python packages live next to the build tree when bindings are enabled.
-_MLIR_PY="$LLVM_BUILD/tools/mlir/python_packages/mlir_core"
-if [[ -d "$_MLIR_PY" ]]; then
-  case ":${PYTHONPATH:-}:" in
-    *":$_MLIR_PY:"*) ;;
-    *) export PYTHONPATH="$_MLIR_PY${PYTHONPATH:+:$PYTHONPATH}" ;;
-  esac
-fi
-unset _MLIR_PY
-
-# Project venv for PyTorch baselines (MLIR Python comes via PYTHONPATH above).
+# Project venv (numpy / onnx for scripts/).
 if [[ -f "$TC_ROOT/.venv/bin/activate" ]]; then
   # shellcheck disable=SC1091
   source "$TC_ROOT/.venv/bin/activate"

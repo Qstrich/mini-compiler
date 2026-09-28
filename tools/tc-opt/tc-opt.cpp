@@ -1,7 +1,7 @@
 //===- tc-opt.cpp - Mini tensor compiler optimizer driver ------*- C++ -*-===//
 
-#include "tc/Conversion/Passes.h"
-#include "tc/Pipeline/TCPipeline.h"
+#include "lowering/Passes.h"
+#include "lowering/Pipeline.h"
 
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/InitAllPasses.h"
@@ -10,6 +10,7 @@
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
   mlir::tc::registerTCPasses();
+  mlir::tc::registerTCPipelines();
 
   mlir::DialectRegistry registry;
   mlir::tc::registerTCCompilerDialects(registry);

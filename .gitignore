@@ -12,3 +12,6 @@ compile_commands.json
 .idea/
 .vscode/
 .clangd/
+
+# Python
+__pycache__/

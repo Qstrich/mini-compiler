@@ -28,13 +28,12 @@ set(TC_BINARY_DIR ${PROJECT_BINARY_DIR})
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
-include_directories(${TC_SOURCE_DIR}/include)
-include_directories(${TC_BINARY_DIR}/include)
+include_directories(${TC_SOURCE_DIR}/src)
+include_directories(${TC_BINARY_DIR}/src)
 link_directories(${LLVM_BUILD_LIBRARY_DIR})
 add_definitions(${LLVM_DEFINITIONS})
 
-add_subdirectory(include)
-add_subdirectory(lib)
+add_subdirectory(src)
 add_subdirectory(tools/tc-opt)
 add_subdirectory(tools/tc-compile)
 

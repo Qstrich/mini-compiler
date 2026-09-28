@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Compare tc-compile -emit=jit output to NumPy, and ONNX Runtime if present."""
+"""Run each model in models.py through `tc-compile -emit=jit` and compare the
+result to its NumPy reference, and to ONNX Runtime when it is installed."""
 
 from __future__ import annotations
 
@@ -10,141 +11,77 @@ from pathlib import Path
 
 import numpy as np
 
+from models import MODELS, Model, Shape
+
 REL_TOL = 1e-4
 ABS_TOL = 1e-5
 
-MODELS = ("add", "relu", "matmul", "linear")
 
-
-def sequential(shape: tuple[int, ...]) -> np.ndarray:
-    n = int(np.prod(shape)) if shape else 1
-    return np.arange(n, dtype=np.float32).reshape(shape)
+def sequential(shape: Shape) -> np.ndarray:
+    """What tc-compile feeds @main when no -input= is given: 0, 1, 2, ..."""
+    return np.arange(int(np.prod(shape)), dtype=np.float32).reshape(shape)
 
 
 def parse_outputs(text: str) -> list[np.ndarray]:
-    outputs: list[np.ndarray] = []
-    lines = text.splitlines()
-    i = 0
-    while i < len(lines):
-        if not lines[i].startswith("output["):
-            i += 1
-            continue
-        i += 1
-        if i >= len(lines) or not lines[i].startswith("shape:"):
-            raise ValueError(f"missing shape after output header: {lines[i-1:]}")
-        shape_txt = lines[i].split(":", 1)[1].strip()
-        i += 1
-        if shape_txt == "scalar":
-            shape: tuple[int, ...] = ()
-        else:
-            shape = tuple(int(d) for d in shape_txt.split("x") if d)
-        values: list[float] = []
-        needed = int(np.prod(shape)) if shape else 1
-        while i < len(lines) and not lines[i].startswith("output[") and len(values) < needed:
-            if lines[i].strip():
-                values.extend(float(tok) for tok in lines[i].split())
-            i += 1
-        if len(values) != needed:
-            raise ValueError(f"expected {needed} values, got {len(values)}")
+    """Parse `output[i]` / `shape:AxB` / rows-of-floats blocks."""
+    outputs = []
+    for block in text.split("output[")[1:]:
+        header, *rows = block.splitlines()[1:]
+        dims = header.removeprefix("shape:").strip()
+        shape = () if dims == "scalar" else tuple(int(d) for d in dims.split("x"))
+        values = [float(tok) for row in rows for tok in row.split()]
         outputs.append(np.array(values, dtype=np.float32).reshape(shape))
     if not outputs:
         raise ValueError(f"no JIT outputs parsed from:\n{text}")
     return outputs
 
 
-def feeds(name: str) -> dict[str, np.ndarray]:
-    if name == "add":
-        a = sequential((2, 2))
-        return {"A": a, "B": a}
-    if name == "relu":
-        return {"X": sequential((2, 2))}
-    if name == "matmul":
-        return {"A": sequential((2, 4)), "B": sequential((4, 3))}
-    if name == "linear":
-        return {"X": sequential((2, 4))}
-    raise ValueError(f"unknown model {name}")
-
-
-def numpy_reference(name: str) -> list[np.ndarray]:
-    ins = feeds(name)
-    if name == "add":
-        return [ins["A"] + ins["B"]]
-    if name == "relu":
-        return [np.maximum(ins["X"], 0.0)]
-    if name == "matmul":
-        return [ins["A"] @ ins["B"]]
-    if name == "linear":
-        w = np.arange(12, dtype=np.float32).reshape(4, 3)
-        b = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32)
-        return [np.maximum(ins["X"] @ w + b, 0.0)]
-    raise ValueError(f"unknown model {name}")
-
-
-def try_ort_reference(model: Path, name: str) -> list[np.ndarray] | None:
+def ort_outputs(path: Path, feeds: dict[str, np.ndarray]) -> list[np.ndarray] | None:
     try:
         import onnxruntime as ort
     except ImportError:
         return None
-    sess = ort.InferenceSession(str(model), providers=["CPUExecutionProvider"])
-    outs = sess.run(None, feeds(name))
-    return [np.asarray(o, dtype=np.float32) for o in outs]
+    session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    return [np.asarray(o, dtype=np.float32) for o in session.run(None, feeds)]
 
 
-def assert_close(label: str, got: list[np.ndarray], exp: list[np.ndarray]) -> None:
-    if len(got) != len(exp):
-        raise AssertionError(f"{label}: {len(got)} outputs, expected {len(exp)}")
-    for i, (g, e) in enumerate(zip(got, exp)):
+def assert_close(label: str, got: list[np.ndarray], expected: list[np.ndarray]) -> None:
+    if len(got) != len(expected):
+        raise AssertionError(f"{label}: {len(got)} outputs, expected {len(expected)}")
+    for i, (g, e) in enumerate(zip(got, expected)):
         if not np.allclose(g, e, rtol=REL_TOL, atol=ABS_TOL):
-            raise AssertionError(f"{label} output[{i}] mismatch\n got:\n{g}\n exp:\n{e}")
+            raise AssertionError(f"{label} output[{i}] mismatch\n got:\n{g}\n expected:\n{e}")
 
 
-def run_jit(tc_compile: str, model: Path, extra: list[str] | None = None) -> str:
-    cmd = [tc_compile, str(model), "-emit=jit"]
-    if extra:
-        cmd.extend(extra)
-    proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
+def check(tc_compile: str, models_dir: Path, model: Model, require_ort: bool) -> None:
+    path = models_dir / f"{model.name}.onnx"
+    proc = subprocess.run([tc_compile, str(path), "-emit=jit"], text=True, capture_output=True)
     if proc.returncode != 0:
-        raise RuntimeError(f"{model.name} jit failed:\n{proc.stderr or proc.stdout}")
-    return proc.stdout
+        raise RuntimeError(f"{path.name} jit failed:\n{proc.stderr or proc.stdout}")
+    got = parse_outputs(proc.stdout)
 
+    feeds = {name: sequential(shape) for name, shape in model.inputs.items()}
+    assert_close(f"{model.name} numpy", got, [model.reference({**feeds, **model.initializers})])
 
-def run_one(
-    tc_compile: str,
-    model: Path,
-    extra: list[str] | None = None,
-    require_ort: bool = False,
-) -> None:
-    got = parse_outputs(run_jit(tc_compile, model, extra))
-    label = model.name if not extra else f"{model.name} {' '.join(extra)}"
-    assert_close(f"{label} numpy", got, numpy_reference(model.stem))
-    ort = try_ort_reference(model, model.stem)
+    ort = ort_outputs(path, feeds)
     if ort is None:
         if require_ort:
             raise RuntimeError("onnxruntime is required but not installed")
-        print(f"ok {label} (numpy)")
+        print(f"ok {model.name} (numpy)")
         return
-    assert_close(f"{label} ort", got, ort)
-    print(f"ok {label} (numpy+ort)")
-
-
-def run_all(tc_compile: str, src: Path, require_ort: bool = False) -> None:
-    models = src / "models"
-    for name in MODELS:
-        path = models / f"{name}.onnx"
-        run_one(tc_compile, path, require_ort=require_ort)
+    assert_close(f"{model.name} ort", got, ort)
+    print(f"ok {model.name} (numpy+ort)")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tc-compile", default="tc-compile")
-    parser.add_argument("--src", type=Path, required=True)
-    parser.add_argument(
-        "--require-ort",
-        action="store_true",
-        help="Fail if onnxruntime is not installed",
-    )
+    parser.add_argument("--src", type=Path, required=True, help="repository root")
+    parser.add_argument("--require-ort", action="store_true",
+                        help="fail if onnxruntime is not installed")
     args = parser.parse_args()
-    run_all(args.tc_compile, args.src, require_ort=args.require_ort)
+    for model in MODELS:
+        check(args.tc_compile, args.src / "models", model, args.require_ort)
     return 0
 
 

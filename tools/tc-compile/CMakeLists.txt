@@ -1,15 +1,7 @@
-set(LLVM_LINK_COMPONENTS
-  Core
-  Support
-  nativecodegen
-  native
-)
-
 set(LIBS
-  MLIRTCFrontend
-  MLIRTC
-  MLIRTCConversion
-  MLIRTCPipeline
+  TCImport
+  TCLowering
+  TCRuntime
   MLIRIR
   LLVMSupport
 )

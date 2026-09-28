@@ -7,90 +7,134 @@ Output is CPU machine code (`-emit=jit`).
 Pinned LLVM: **llvmorg-23.1.1**, built with `host` and
 `MLIR_ENABLE_CUDA_RUNNER=OFF`.
 
+## Layout
+
+The source tree is the pipeline. Each stage is one folder under `src/` and one
+library, and `test/` uses the same names:
+
+```
+src/import/    ONNX file -> ModelInfo -> tc IR          (TCImport)
+src/dialect/   the tc IR: ops and their shape rules     (TCDialect)
+src/lowering/  tc IR -> Linalg -> loops -> LLVM dialect (TCLowering)
+src/runtime/   JIT-compile and run on the host CPU      (TCRuntime)
+src/support/   shared helpers
+tools/         tc-compile (the driver), tc-opt (run passes on .mlir)
+test/          import/ dialect/ lowering/ e2e/
+```
+
+Headers sit next to their `.cpp` and `.td` files (as in IREE), not in a
+separate `include/` tree: nothing is installed, so a public-header split would
+only spread each stage over two places. Includes are stage-relative, e.g.
+`#include "dialect/TCOps.h"`, and TableGen output lands at the same relative
+path under `build/src/`.
+
 ## Pipeline
 
-```
-ONNX protobuf
-    → ModelInfo (names, shapes, initializers, nodes)
-    → tc dialect  (-emit=mlir)
-    → Linalg-on-tensors  (-emit=linalg)
-    → one-shot bufferize  (-emit=memref)
-         → scf/memref → host LLVM → ExecutionEngine  (-emit=llvm|jit)
+Each stage has one owner. `tc-compile -emit=X` stops after stage X.
+
+| Stage | Produces | `-emit=` | Code |
+|---|---|---|---|
+| import: decode | `onnx::GraphProto` structs | | `src/import/OnnxProto.cpp` |
+| import: rules | `ModelInfo` (names, shapes, weights, nodes) | `proto` | `src/import/ONNXImporter.cpp` |
+| import: generate | `tc` dialect in `func.func @main` | `mlir` | `src/import/MLIRGen.cpp` |
+| lowering: `tc-lower-to-linalg` | Linalg on tensors | `linalg` | `src/lowering/Pipeline.cpp` |
+| lowering: `tc-bufferize` | memrefs + `scf.for` loops | `memref` | `src/lowering/Pipeline.cpp` |
+| lowering: `tc-lower-to-llvm` | LLVM dialect | `llvm` | `src/lowering/Pipeline.cpp` |
+| runtime | results on the host CPU | `jit` | `src/runtime/JIT.cpp` |
+
+The three pass pipelines are also registered with `tc-opt` under those names,
+so any stage can be run on a `.mlir` file:
+
+```bash
+tc-opt in.mlir --tc-lower-to-linalg --tc-bufferize --tc-lower-to-llvm
 ```
 
-## Tools
+`tools/tc-compile/tc-compile.cpp` is just that table in order (`compile()`).
 
-| Tool | Role |
+## Where each rule lives
+
+| Rule | Only place |
 |---|---|
-| `tc-opt` | Pass driver (`mlir-opt` for this project). Registers `tc` plus upstream dialects/passes. |
-| `tc-compile` | ONNX → selected emit stage. |
+| ONNX wire format, field numbers | `OnnxProto.cpp` |
+| ONNX restrictions: static shapes, fp32, `Constant` → initializer | `ONNXImporter.cpp` |
+| Which ONNX op becomes which `tc` op | `kSupportedOps` in `MLIRGen.cpp` |
+| Shape rules (`Add` broadcast, `MatMul` `K` match) | `inferReturnTypes` in `src/dialect/TCOps.cpp` |
+| `tc` → Linalg | `src/lowering/TCToLinalg.cpp` |
+| Memref ABI for calling `@main` | `src/runtime/JIT.cpp` |
 
-`func.func @main` is the entry. JIT sets `llvm.emit_c_interface` and calls
-`_mlir_ciface_main` with packed ranked-memref descriptors.
+Shape errors are therefore reported once, by the dialect, at the ONNX value
+they would define (MLIRGen gives each op a `NameLoc`).
+
+### Adding an op
+
+1. `src/dialect/TCOps.td`: the op, plus `inferReturnTypes` in
+   `TCOps.cpp` if the result type is not just the operand type.
+2. `MLIRGen.cpp`: one row in `kSupportedOps`.
+3. `TCToLinalg.cpp`: one conversion pattern (elementwise ops use
+   `buildElementwise`).
+4. `scripts/models.py`: a sample model with a NumPy reference, then
+   `python3 scripts/gen_models.py`.
 
 ## Dialect `tc`
 
-ODS in `include/tc/Dialect/TCOps.td`. Ranked `tensor<...xf32>` only.
+ODS in `src/dialect/TCOps.td`. Ranked `tensor<...xf32>` only.
 
-| Op | Meaning | Verifier |
+| Op | Meaning | Result type |
 |---|---|---|
-| `tc.constant` | Dense elements payload | Result type matches the attribute |
-| `tc.add` | Elementwise add | Same shape, or one operand is `tensor<f32>` |
-| `tc.relu` | `max(x, 0)` | Same type in/out |
-| `tc.matmul` | `A[M,K] @ B[K,N] → C[M,N]` | Rank-2, contracting `K` matches |
+| `tc.constant` | Dense elements payload | The attribute's type |
+| `tc.add` | Elementwise add | Same shape, or one operand is `tensor<f32>` (broadcast) |
+| `tc.relu` | `max(x, 0)` | Operand type |
+| `tc.matmul` | `A[M,K] @ B[K,N]` | `tensor<MxNxf32>` |
 
-The SSA graph lives in `func.func`. Shape errors fail in the dialect / frontend,
-not in LLVM.
+`tc.add`, `tc.relu` and `tc.matmul` implement `InferTypeOpInterface`; its
+verifier rejects any op whose written result type differs from the inferred
+one. There are no hand-written verifiers.
 
-Lowering (`--convert-tc-to-linalg`):
+Lowering (`--convert-tc-to-linalg`, the core of `tc-lower-to-linalg`):
 
 - `tc.constant` → `arith.constant`
 - `tc.add` → `linalg.generic` + `arith.addf`
 - `tc.relu` → `linalg.generic` + `arith.maximumf`
-- `tc.matmul` → `linalg.matmul`
+- `tc.matmul` → `linalg.fill` with 0, then `linalg.matmul` (it accumulates
+  into its init, `C += A·B`, so the init must start at zero)
 
-## Frontend
+## Import
 
-`third_party/onnx/onnx.proto` is a field-number subset. A small wire decoder
-(`ProtobufReader`) skips unknown fields. No system `libprotobuf`.
+`third_party/onnx/onnx.proto` is the reference for field numbers. The decoder
+reads only the messages in `src/import/OnnxProto.h`, skips unknown fields,
+and does not link `libprotobuf`.
 
-`parseONNXFile` → `ModelInfo` → `MLIRGen`. Graph inputs that are not
-initializers become `@main` arguments. Initializers become `tc.constant`.
-Supported node types: `Add`, `Relu`, `MatMul`, `Constant`.
-
-Sample graphs in `models/` are written by `scripts/gen_models.py`.
-
-## Lowering pipeline
-
-The barebones pipeline keeps the tensor program easy to follow. It lowers the
-custom `tc` operations to Linalg and then immediately proceeds to bufferization.
-Canonicalize and CSE clean up the IR after the custom conversion.
+Graph inputs that are not initializers become `@main` arguments;
+initializers and `Constant` nodes become `tc.constant`. `@main` carries
+`llvm.emit_c_interface` so the JIT can call `_mlir_ciface_main`.
 
 ## CPU backend
 
-After Linalg lowering:
+1. `tc-bufferize`: one-shot bufferize with identity layouts at function
+   boundaries; results → caller-allocated out-params; buffer deallocation;
+   `linalg` → `scf.for`.
+2. `tc-lower-to-llvm`: SCF / affine / memref / arith / func / math / ub →
+   LLVM dialect.
+3. `runJIT`: `mlir::ExecutionEngine`, calling
+   `_mlir_ciface_main(inputs..., outputs...)`.
 
-1. One-shot bufferize with identity layouts and function-boundary bufferization
-2. Results → out-params, then buffer deallocation
-3. `linalg` → `scf.for`
-4. SCF / affine / memref / arith / func / math / ub → LLVM dialect
-5. `mlir::ExecutionEngine` JIT
-
-Memref ABI: `{allocated*, aligned*, offset, sizes[rank], strides[rank]}`.
-Missing `-input=` files are filled with `0, 1, 2, …`. Outputs print as a shape
-header plus row-major floats. Goldens are NumPy (`1e-4` rel / `1e-5` abs);
-ONNX Runtime is used too when it is installed.
+Memref descriptor ABI: `{allocated*, aligned*, offset, sizes[rank],
+strides[rank]}`, built directly around the host buffers. Missing `-input=`
+files are filled with `0, 1, 2, …`. Outputs print as a `shape:` header plus
+row-major floats.
 
 ## Tests
 
-`ninja -C build check-tc` is the CPU test gate.
+`ninja -C build check-tc` (or `scripts/run_ci.sh`) is the only test gate.
 
 | Area | What it freezes |
 |---|---|
-| `test/Dialect` | Op assembly + verifier errors |
-| `test/Frontend` | `-emit=proto` / `-emit=mlir` |
-| `test/Conversion` | `tc` → Linalg |
-| `test/Pipeline` | Every later `-emit=`, plus JIT vs NumPy |
-| `test/e2e` | Pytest: JIT vs NumPy/ORT |
+| `test/dialect` | Op assembly + inference/verifier errors |
+| `test/import` | `-emit=proto` / `-emit=mlir`, and clean import errors |
+| `test/lowering` | `tc` → Linalg, and every later `-emit=` |
+| `test/e2e` | JIT vs NumPy (and ONNX Runtime if installed) |
 
-`scripts/run_ci.sh` builds `check-tc` and, if pytest is present, `test/e2e`.
+Sample graphs and their NumPy references are defined once in
+`scripts/models.py`: `gen_models.py` writes `models/*.onnx` from them and
+`check_numeric.py` (run by `test/e2e/numeric.mlir`) checks the JIT
+against them (`1e-4` rel / `1e-5` abs).

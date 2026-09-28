@@ -21,24 +21,17 @@ fi
 
 mkdir -p "$LLVM_BUILD"
 
-# MLIR Python bindings (LLVM 23.1.x) need nanobind 2.9.x in the active venv.
-if [[ -x "$TC_ROOT/.venv/bin/pip" ]]; then
-  "$TC_ROOT/.venv/bin/pip" install -q "nanobind==2.9.2" pybind11 numpy
-fi
-
 cmake -G Ninja -S "$LLVM_SRC/llvm" -B "$LLVM_BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=clang \
   -DCMAKE_CXX_COMPILER=clang++ \
-  -DPython3_EXECUTABLE="$TC_ROOT/.venv/bin/python" \
-  -DPython3_FIND_VIRTUALENV=ONLY \
   -DLLVM_USE_LINKER=lld \
   -DLLVM_ENABLE_PROJECTS=mlir \
   -DLLVM_TARGETS_TO_BUILD="host" \
   -DLLVM_ENABLE_ASSERTIONS=ON \
   -DLLVM_INSTALL_UTILS=ON \
   -DLLVM_CCACHE_BUILD=ON \
-  -DMLIR_ENABLE_BINDINGS_PYTHON=ON \
+  -DMLIR_ENABLE_BINDINGS_PYTHON=OFF \
   -DMLIR_ENABLE_CUDA_RUNNER=OFF
 
 echo "Building LLVM/MLIR with -j${JOBS} (this can take 30–90 minutes)..."

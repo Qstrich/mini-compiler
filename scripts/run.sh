@@ -1,20 +1,13 @@
 #!/usr/bin/env bash
 # Build tc-compile if needed and run a convenient compiler demo.
+#   run.sh               walk models/linear.onnx through every stage
+#   run.sh model.onnx    JIT-run one model
+#   run.sh args...       pass arguments straight to tc-compile
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck disable=SC1091
-source "$SCRIPT_DIR/env.sh"
-
-if [[ ! -d "$TC_ROOT/build" ]]; then
-  cmake -G Ninja -S "$TC_ROOT" -B "$TC_ROOT/build" \
-    -DCMAKE_BUILD_TYPE=Debug \
-    -DMLIR_DIR="$MLIR_DIR" \
-    -DLLVM_DIR="$LLVM_DIR" \
-    -DLLVM_EXTERNAL_LIT="$LLVM_EXTERNAL_LIT"
-fi
-
-cmake --build "$TC_ROOT/build" --target tc-compile
+"$SCRIPT_DIR/build.sh" tc-compile
+TC_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 TC_COMPILE="$TC_ROOT/build/bin/tc-compile"
 
 if [[ "$#" -eq 0 ]]; then

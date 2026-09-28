@@ -38,13 +38,11 @@ sudo apt install -y \
 cd ~/workspace/mini-compiler
 python3 -m venv .venv
 source scripts/env.sh          # sets TC_ROOT, LLVM_*, PATH, activates .venv
-pip install -r requirements.txt --index-url https://download.pytorch.org/whl/cpu
-pip install "nanobind==2.9.2" pybind11
-# optional goldens: pip install onnx onnxruntime
+pip install -r requirements.txt   # numpy, onnx
+# optional second golden: pip install onnxruntime
 ```
 
-`scripts/env.sh` points tools at `~/src/llvm-project/build/bin` and puts MLIR
-Python packages on `PYTHONPATH`.
+`scripts/env.sh` points tools at `~/src/llvm-project/build/bin`.
 
 ## Build LLVM / MLIR (30–90 min)
 
@@ -58,25 +56,24 @@ mlir-opt --version
 ```
 
 Flags: Release, Clang+LLD, `host`, assertions, utils, ccache, Python bindings
-on, CUDA runner off.
+off, CUDA runner off.
 
 ## Build this project
 
 Run these commands in **WSL Ubuntu bash**, not Windows PowerShell.
 
 ```bash
-source scripts/env.sh
-cmake -G Ninja -S . -B build \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DMLIR_DIR="$MLIR_DIR" \
-  -DLLVM_DIR="$LLVM_DIR" \
-  -DLLVM_EXTERNAL_LIT="$LLVM_EXTERNAL_LIT"
-cmake --build build
-ninja -C build check-tc
-# or: ./scripts/run_ci.sh
+scripts/build.sh            # configures build/ on first use, then builds
+scripts/build.sh check-tc   # build + run the test suite (same as scripts/run_ci.sh)
 ```
 
 Binaries: `build/bin/tc-opt`, `build/bin/tc-compile`.
+
+## How it fits together
+
+`tc-compile` = ONNX import → three named pass pipelines → JIT. The stage
+table, where each rule lives, and how to add an op are in
+[docs/DESIGN.md](docs/DESIGN.md#pipeline).
 
 ## Flags (`tc-compile`)
 
@@ -96,7 +93,9 @@ result tensor.
 
 ```bash
 ./build/bin/tc-opt test/smoke/empty.mlir
-./build/bin/tc-opt test/Conversion/tc-to-linalg.mlir --convert-tc-to-linalg
+./build/bin/tc-opt test/lowering/tc-to-linalg.mlir --tc-lower-to-linalg
+./build/bin/tc-opt test/lowering/tc-to-linalg.mlir \
+    --tc-lower-to-linalg --tc-bufferize --tc-lower-to-llvm
 ./build/bin/tc-compile models/linear.onnx -emit=proto
 ./build/bin/tc-compile models/linear.onnx -emit=mlir
 ./build/bin/tc-compile models/linear.onnx -emit=linalg
@@ -105,7 +104,8 @@ result tensor.
 ./build/bin/tc-compile models/linear.onnx -emit=jit
 ```
 
-Regenerate sample ONNX graphs (already checked in under `models/`):
+Sample graphs are defined in `scripts/models.py`. Regenerate the checked-in
+`models/*.onnx` after editing it:
 
 ```bash
 python3 scripts/gen_models.py
@@ -115,14 +115,13 @@ Compare JIT against NumPy (and ONNX Runtime if installed):
 
 ```bash
 python3 scripts/check_numeric.py --tc-compile ./build/bin/tc-compile --src .
-# or: python3 -m pytest test/e2e -q
 ```
 
 ## Tests / CI
 
-`ninja -C build check-tc` is the CPU test gate: FileCheck on every `-emit=`
-stage plus JIT goldens. `scripts/run_ci.sh` runs that suite and pytest when
-available.
+`ninja -C build check-tc` (or `scripts/run_ci.sh`) is the CPU test gate:
+FileCheck on every `-emit=` stage, clean errors for invalid input, and the
+JIT numeric goldens above.
 
 ## Status
 

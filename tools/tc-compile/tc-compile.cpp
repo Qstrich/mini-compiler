@@ -1,13 +1,21 @@
 //===- tc-compile.cpp - Mini tensor compiler driver ------------*- C++ -*-===//
+//
+// ONNX file -> ModelInfo -> tc -> [pipelines] -> print or JIT. `-emit=` picks
+// where to stop; see compile() for the whole flow.
+//
+//===----------------------------------------------------------------------===//
 
-#include "tc/Frontend/MLIRGen.h"
-#include "tc/Frontend/ModelInfo.h"
-#include "tc/Frontend/ONNXParser.h"
-#include "tc/Pipeline/TCPipeline.h"
+#include "import/MLIRGen.h"
+#include "import/ModelInfo.h"
+#include "import/ONNXImporter.h"
+#include "lowering/Pipeline.h"
+#include "runtime/JIT.h"
+#include "runtime/TensorBuffer.h"
+#include "support/Common.h"
 
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/MLIRContext.h"
-#include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -16,18 +24,14 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstdlib>
-#include <memory>
 #include <string>
 
+using namespace mlir;
+using namespace mlir::tc;
+
 namespace {
-enum class EmitKind {
-  Proto,
-  Mlir,
-  Linalg,
-  Memref,
-  LLVM,
-  JIT,
-};
+/// Compilation stages in order; `-emit=X` stops after stage X.
+enum class EmitKind { Proto, Mlir, Linalg, Memref, LLVM, JIT };
 
 llvm::cl::opt<std::string> InputFilename(llvm::cl::Positional,
                                          llvm::cl::desc("<input file>"),
@@ -44,7 +48,7 @@ llvm::cl::opt<EmitKind> Emit(
         clEnumValN(EmitKind::JIT, "jit", "JIT-compile and run on CPU")),
     llvm::cl::init(EmitKind::Mlir));
 
-llvm::cl::list<std::string> InputData(
+llvm::cl::list<std::string> InputFiles(
     "input", llvm::cl::desc("C-contiguous float32 .npy file for each @main arg"),
     llvm::cl::value_desc("file.npy"), llvm::cl::ZeroOrMore);
 
@@ -53,49 +57,77 @@ llvm::cl::opt<std::string> OutputFilename(
     llvm::cl::value_desc("filename"), llvm::cl::init("-"));
 } // namespace
 
-static const char *emitKindName(EmitKind kind) {
-  switch (kind) {
-  case EmitKind::Proto:
-    return "proto";
-  case EmitKind::Mlir:
-    return "mlir";
-  case EmitKind::Linalg:
-    return "linalg";
-  case EmitKind::Memref:
-    return "memref";
-  case EmitKind::LLVM:
-    return "llvm";
-  case EmitKind::JIT:
-    return "jit";
+/// One tensor per graph input: from `-input=` files if given, else 0, 1, 2, ...
+static llvm::Expected<SmallVector<TensorBuffer>>
+loadInputs(const ModelInfo &model) {
+  if (!InputFiles.empty() && InputFiles.size() != model.inputs.size())
+    return makeError("expected " + llvm::Twine(model.inputs.size()) +
+                     " -input files, got " + llvm::Twine(InputFiles.size()));
+
+  SmallVector<TensorBuffer> inputs;
+  for (auto [i, desc] : llvm::enumerate(model.inputs)) {
+    if (InputFiles.empty()) {
+      inputs.push_back(makeSequentialTensor(desc.shape));
+      continue;
+    }
+    llvm::Expected<TensorBuffer> loaded = loadNpyF32(InputFiles[i]);
+    if (!loaded)
+      return loaded.takeError();
+    if (loaded->shape != desc.shape)
+      return makeError("-input #" + llvm::Twine(i) + " shape mismatch");
+    inputs.push_back(std::move(*loaded));
   }
-  return "unknown";
+  return inputs;
 }
 
-static mlir::tc::PipelineStage emitToStage(EmitKind kind) {
-  switch (kind) {
-  case EmitKind::Linalg:
-    return mlir::tc::PipelineStage::Linalg;
-  case EmitKind::Memref:
-    return mlir::tc::PipelineStage::Memref;
-  case EmitKind::LLVM:
-  case EmitKind::JIT:
-    return mlir::tc::PipelineStage::LLVM;
-  default:
-    llvm_unreachable("emit kind is not a lowering stage");
+/// The whole compiler, one stage per block, stopping where -emit= says.
+static llvm::Error compile(llvm::raw_ostream &out) {
+  // import, step 1: .onnx file -> ModelInfo
+  llvm::Expected<ModelInfo> model = parseONNXFile(InputFilename);
+  if (!model)
+    return model.takeError();
+  if (Emit == EmitKind::Proto) {
+    dumpModelInfo(*model, out);
+    return llvm::Error::success();
   }
-}
 
-static llvm::Expected<std::unique_ptr<llvm::ToolOutputFile>>
-openOutput() {
-  if (OutputFilename == "-")
-    return std::unique_ptr<llvm::ToolOutputFile>();
-  std::error_code ec;
-  auto file = std::make_unique<llvm::ToolOutputFile>(OutputFilename, ec,
-                                                     llvm::sys::fs::OF_None);
-  if (ec)
-    return llvm::createStringError(ec, "failed to open '" + OutputFilename +
-                                           "': " + ec.message());
-  return file;
+  // import, step 2: ModelInfo -> tc IR
+  DialectRegistry registry;
+  registerTCCompilerDialects(registry);
+  MLIRContext context(registry);
+  auto module = generateMLIR(context, *model, InputFilename);
+  if (!module)
+    return module.takeError();
+  if (Emit == EmitKind::Mlir) {
+    (*module)->print(out);
+    return llvm::Error::success();
+  }
+
+  // lowering: tc IR -> Linalg -> memref loops -> LLVM dialect
+  PipelineStage stage = Emit == EmitKind::Linalg   ? PipelineStage::Linalg
+                        : Emit == EmitKind::Memref ? PipelineStage::Memref
+                                                   : PipelineStage::LLVM;
+  if (failed(runPipeline(**module, stage)))
+    return makeError("lowering failed");
+  if (Emit != EmitKind::JIT) {
+    (*module)->print(out);
+    return llvm::Error::success();
+  }
+
+  // runtime: JIT-compile and run @main on this CPU
+  auto inputs = loadInputs(*model);
+  if (!inputs)
+    return inputs.takeError();
+  auto outputShapes = llvm::map_to_vector(
+      model->outputs, [](const TensorDesc &t) { return t.shape; });
+  auto outputs = runJIT(**module, *inputs, outputShapes);
+  if (!outputs)
+    return makeError("JIT failed: " + llvm::toString(outputs.takeError()));
+  for (auto [i, buffer] : llvm::enumerate(*outputs)) {
+    out << "output[" << i << "]\n";
+    printTensorBuffer(buffer, out);
+  }
+  return llvm::Error::success();
 }
 
 int main(int argc, char **argv) {
@@ -104,113 +136,17 @@ int main(int argc, char **argv) {
       argc, argv,
       "tc-compile - Mini end-to-end tensor compiler (ONNX -> MLIR -> LLVM)\n");
 
-  llvm::Expected<std::unique_ptr<llvm::ToolOutputFile>> outFileOr =
-      openOutput();
-  if (!outFileOr) {
-    llvm::errs() << "tc-compile: " << llvm::toString(outFileOr.takeError())
-                 << "\n";
+  std::error_code ec;
+  llvm::ToolOutputFile output(OutputFilename, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    llvm::errs() << "tc-compile: failed to open '" << OutputFilename
+                 << "': " << ec.message() << "\n";
     return EXIT_FAILURE;
   }
-  llvm::raw_ostream &out =
-      *outFileOr ? (*outFileOr)->os() : llvm::outs();
-
-  llvm::Expected<mlir::tc::ModelInfo> modelOr =
-      mlir::tc::parseONNXFile(InputFilename);
-  if (!modelOr) {
-    llvm::errs() << "tc-compile: " << llvm::toString(modelOr.takeError())
-                 << "\n";
+  if (llvm::Error err = compile(output.os())) {
+    llvm::errs() << "tc-compile: " << llvm::toString(std::move(err)) << "\n";
     return EXIT_FAILURE;
   }
-
-  if (Emit == EmitKind::Proto) {
-    mlir::tc::dumpModelInfo(*modelOr, out);
-    if (*outFileOr)
-      (*outFileOr)->keep();
-    return EXIT_SUCCESS;
-  }
-
-  mlir::DialectRegistry registry;
-  mlir::tc::registerTCCompilerDialects(registry);
-  mlir::MLIRContext context(registry);
-
-  llvm::Expected<mlir::OwningOpRef<mlir::ModuleOp>> moduleOr =
-      mlir::tc::generateMLIR(context, *modelOr, InputFilename);
-  if (!moduleOr) {
-    llvm::errs() << "tc-compile: " << llvm::toString(moduleOr.takeError())
-                 << "\n";
-    return EXIT_FAILURE;
-  }
-
-  if (Emit == EmitKind::Mlir) {
-    (*moduleOr)->print(out);
-    if (*outFileOr)
-      (*outFileOr)->keep();
-    return EXIT_SUCCESS;
-  }
-
-  if (failed(mlir::tc::runPipeline(**moduleOr, emitToStage(Emit)))) {
-    llvm::errs() << "tc-compile: lowering to " << emitKindName(Emit)
-                 << " failed\n";
-    return EXIT_FAILURE;
-  }
-
-  if (Emit != EmitKind::JIT) {
-    (*moduleOr)->print(out);
-    if (*outFileOr)
-      (*outFileOr)->keep();
-    return EXIT_SUCCESS;
-  }
-
-  if (!InputData.empty() && InputData.size() != modelOr->inputs.size()) {
-    llvm::errs() << "tc-compile: expected " << modelOr->inputs.size()
-                 << " -input files, got " << InputData.size() << "\n";
-    return EXIT_FAILURE;
-  }
-
-  llvm::SmallVector<mlir::tc::TensorBuffer> inputs;
-  inputs.reserve(modelOr->inputs.size());
-  for (size_t i = 0; i < modelOr->inputs.size(); ++i) {
-    if (InputData.empty()) {
-      inputs.push_back(mlir::tc::makeSequentialInput(modelOr->inputs[i].shape));
-      continue;
-    }
-    llvm::Expected<mlir::tc::TensorBuffer> loaded =
-        mlir::tc::loadNpyF32(InputData[i]);
-    if (!loaded) {
-      llvm::errs() << "tc-compile: " << llvm::toString(loaded.takeError())
-                   << "\n";
-      return EXIT_FAILURE;
-    }
-    if (loaded->shape != modelOr->inputs[i].shape) {
-      llvm::errs() << "tc-compile: -input #" << i << " shape mismatch\n";
-      return EXIT_FAILURE;
-    }
-    inputs.push_back(std::move(*loaded));
-  }
-
-  llvm::SmallVector<mlir::tc::TensorBuffer> outputs;
-  outputs.reserve(modelOr->outputs.size());
-  for (const mlir::tc::TensorDesc &out : modelOr->outputs) {
-    mlir::tc::TensorBuffer buf;
-    buf.shape = out.shape;
-    buf.data.assign(1, 0.0f);
-    size_t n = 1;
-    for (int64_t d : out.shape)
-      n *= static_cast<size_t>(d);
-    buf.data.assign(n, 0.0f);
-    outputs.push_back(std::move(buf));
-  }
-
-  if (llvm::Error err =
-          mlir::tc::runJIT(**moduleOr, inputs, outputs)) {
-    llvm::errs() << "tc-compile: JIT failed: " << llvm::toString(std::move(err))
-                 << "\n";
-    return EXIT_FAILURE;
-  }
-
-  for (size_t i = 0; i < outputs.size(); ++i) {
-    llvm::outs() << "output[" << i << "]\n";
-    mlir::tc::printTensorBuffer(outputs[i], llvm::outs());
-  }
+  output.keep();
   return EXIT_SUCCESS;
 }
